@@ -11,8 +11,6 @@ mean/std/5th-95th percentile so either can be sampled from directly.
    clusters and O-D pairs.
 """
 
-from math import atan2, cos, radians, sin, sqrt
-
 import numpy as np
 import pandas as pd
 
@@ -20,124 +18,151 @@ from .costs import FUEL_KGH, JET_A_EUR_PER_KG, _parse_duration, flight_atc_eur
 
 
 def haversine_nm(lat1, lon1, lat2, lon2):
+    """Great-circle distance in nautical miles. Works elementwise on scalars or numpy arrays."""
     R = 3440.065  # nm
-    lat1, lon1, lat2, lon2 = map(radians, [float(lat1), float(lon1), float(lat2), float(lon2)])
+    lat1, lon1, lat2, lon2 = np.radians(lat1), np.radians(lon1), np.radians(lat2), np.radians(lon2)
     dlat, dlon = lat2 - lat1, lon2 - lon1
-    a = sin(dlat / 2) ** 2 + cos(lat1) * cos(lat2) * sin(dlon / 2) ** 2
-    return R * 2 * atan2(sqrt(a), sqrt(1 - a))
+    a = np.sin(dlat / 2) ** 2 + np.cos(lat1) * np.cos(lat2) * np.sin(dlon / 2) ** 2
+    return R * 2 * np.arctan2(np.sqrt(a), np.sqrt(1 - a))
 
 
-def _flight_actual_metrics(firs_grp, pts_grp, eurocontrol_rates):
-    """Returns (fir_distances dict nm, actual_duration_h, actual_total_dist_nm) for one flight."""
-    f = firs_grp.copy()
-    f["entry_dt"] = pd.to_datetime(f["Entry Time"], dayfirst=True)
-    f["exit_dt"]  = pd.to_datetime(f["Exit Time"], dayfirst=True)
-    airborne = (f[~f["FIR ID"].isin(["TAXI_OUT", "TAXI_IN"])]
-                .sort_values("entry_dt").reset_index(drop=True))
-    if airborne.empty:
-        return {}, np.nan, 0.0
+def _consecutive_segment_distances(df, id_col, lat_col, lon_col):
+    """Haversine distance from each row to the next row of the same flight.
 
-    dur_h = (airborne["exit_dt"].iloc[-1] - airborne["entry_dt"].iloc[0]).total_seconds() / 3600
-
-    p = pts_grp.copy()
-    p["time_dt"] = pd.to_datetime(p["Time Over"], dayfirst=True)
-    p = (p[(p["time_dt"] >= airborne["entry_dt"].iloc[0]) &
-           (p["time_dt"] <= airborne["exit_dt"].iloc[-1])]
-         .sort_values("time_dt").reset_index(drop=True))
-    if len(p) < 2:
-        return {}, dur_h, 0.0
-
-    entries = airborne["entry_dt"].values.astype("datetime64[ns]")
-    exits   = airborne["exit_dt"].values.astype("datetime64[ns]")
-    fids    = airborne["FIR ID"].values
-    lats    = p["Latitude"].values.astype(float)
-    lons    = p["Longitude"].values.astype(float)
-    times   = p["time_dt"].values.astype("datetime64[ns]")
-
-    def _idx(t):
-        for i in range(len(entries)):
-            if entries[i] <= t <= exits[i]:
-                return i
-        return -1
-
-    fir_dists, total_dist = {}, 0.0
-    for i in range(len(p) - 1):
-        d = haversine_nm(lats[i], lons[i], lats[i + 1], lons[i + 1])
-        total_dist += d
-        i1, i2 = _idx(times[i]), _idx(times[i + 1])
-        if i1 == i2:
-            if i1 >= 0:
-                fir_dists[fids[i1]] = fir_dists.get(fids[i1], 0) + d
-        elif i1 >= 0:
-            dt = float((times[i + 1] - times[i]) / np.timedelta64(1, "s"))
-            if dt > 0:
-                frac = max(0.0, min(1.0,
-                    float((exits[i1] - times[i]) / np.timedelta64(1, "s")) / dt))
-                fir_dists[fids[i1]] = fir_dists.get(fids[i1], 0) + d * frac
-                if i2 >= 0:
-                    fir_dists[fids[i2]] = fir_dists.get(fids[i2], 0) + d * (1 - frac)
-    # Collapse UIR into FIR: FIR and UIR of the same ANSP are one billing zone
-    for fid in list(fir_dists.keys()):
-        if fid.endswith("UIR"):
-            base_fir = fid[:-3] + "FIR"
-            if base_fir in eurocontrol_rates:
-                fir_dists[base_fir] = fir_dists.get(base_fir, 0) + fir_dists.pop(fid)
-    return fir_dists, dur_h, total_dist
+    df must already be sorted by (id_col, <time/sequence col>). Returns a
+    Series aligned to df's index; the last row of each flight (and rows
+    followed by a different flight) get NaN, since there is no "next" point
+    within the same flight to measure to.
+    """
+    same_next = df[id_col].shift(-1) == df[id_col]
+    d = haversine_nm(
+        df[lat_col].to_numpy(dtype=float), df[lon_col].to_numpy(dtype=float),
+        df[lat_col].shift(-1).to_numpy(dtype=float), df[lon_col].shift(-1).to_numpy(dtype=float),
+    )
+    return pd.Series(d, index=df.index).where(same_next)
 
 
-def _total_dist_from_pts(pts_grp):
-    """Haversine sum over consecutive filed trajectory points."""
-    p = pts_grp.sort_values("Sequence Number").reset_index(drop=True)
-    lats = p["Latitude"].values.astype(float)
-    lons = p["Longitude"].values.astype(float)
-    total = 0.0
-    for i in range(len(p) - 1):
-        total += haversine_nm(lats[i], lons[i], lats[i + 1], lons[i + 1])
-    return round(total, 1)
+def _remap_uir_to_fir(fir_id, eurocontrol_rates):
+    """FIR and UIR of the same ANSP are one billing zone - collapse UIR into FIR
+    only when that FIR actually has a rate entry, otherwise leave it as-is."""
+    if fir_id.endswith("UIR"):
+        base = fir_id[:-3] + "FIR"
+        if base in eurocontrol_rates:
+            return base
+    return fir_id
 
 
 def build_actual_metrics(df_sample, actual_firs, actual_pts, filed_pts,
                           eurocontrol_rates, ac_col=None):
     """Per-flight realised duration/distance/cost, plus the filed trajectory's total distance.
 
+    Vectorised across all flights at once (no per-flight Python loop): each
+    trajectory point is matched to its FIR window with a single pd.merge_asof
+    (by=ECTRL ID), and consecutive-point distances/FIR attribution are done
+    with groupby/shift instead of a nested per-flight, per-point loop. See
+    tests/test_variance.py for edge-case validation against the original
+    per-flight-loop implementation (same-FIR segments, FIR-crossing segments
+    with time-proportional splitting, gaps with no FIR match, UIR/FIR
+    consolidation).
+
     df_sample must already have mtow_t (see costs.add_cost_columns).
     """
     ac_col = ac_col or next(c for c in df_sample.columns if "AC Type" in c)
-    firs_by_id  = dict(list(actual_firs.groupby("ECTRL ID")))
-    pts_by_id   = dict(list(actual_pts.groupby("ECTRL ID")))
-    filed_by_id = dict(list(filed_pts.groupby("ECTRL ID")))
+
+    # --- per-flight airborne window (first entry, last exit of the sorted-by-entry sequence) ---
+    firs = actual_firs[~actual_firs["FIR ID"].isin(["TAXI_OUT", "TAXI_IN"])].copy()
+    firs["entry_dt"] = pd.to_datetime(firs["Entry Time"], dayfirst=True)
+    firs["exit_dt"]  = pd.to_datetime(firs["Exit Time"], dayfirst=True)
+    firs = firs.sort_values(["ECTRL ID", "entry_dt"])
+
+    bounds = firs.groupby("ECTRL ID").agg(
+        window_start=("entry_dt", "first"), window_end=("exit_dt", "last")
+    )
+    duration_h = (bounds["window_end"] - bounds["window_start"]).dt.total_seconds() / 3600
+
+    # --- actual trajectory points, restricted to each flight's airborne window ---
+    pts = actual_pts.copy()
+    pts["time_dt"] = pd.to_datetime(pts["Time Over"], dayfirst=True)
+    pts = pts.merge(bounds, on="ECTRL ID", how="inner")
+    pts = pts[(pts["time_dt"] >= pts["window_start"]) & (pts["time_dt"] <= pts["window_end"])]
+
+    # merge_asof with by= still requires the "on" column sorted *globally* (not just within
+    # each group), so sort purely by time/entry_dt here; re-sort by (ECTRL ID, time_dt) after,
+    # since the consecutive-segment logic below needs grouped-then-time order instead.
+    matched = pd.merge_asof(
+        pts[["ECTRL ID", "time_dt", "Latitude", "Longitude"]].sort_values("time_dt"),
+        firs[["ECTRL ID", "entry_dt", "exit_dt", "FIR ID"]].sort_values("entry_dt"),
+        left_on="time_dt", right_on="entry_dt", by="ECTRL ID", direction="backward",
+    )
+    matched["FIR ID"] = matched["FIR ID"].where(matched["time_dt"] <= matched["exit_dt"])
+    matched = matched.sort_values(["ECTRL ID", "time_dt"]).reset_index(drop=True)
+
+    # --- consecutive-point distance and start/end FIR for each segment ---
+    same_next = matched["ECTRL ID"].shift(-1) == matched["ECTRL ID"]
+    matched["seg_dist"] = _consecutive_segment_distances(matched, "ECTRL ID", "Latitude", "Longitude")
+    matched["fir_end"]  = matched["FIR ID"].shift(-1).where(same_next)
+    matched["t_end"]    = matched["time_dt"].shift(-1).where(same_next)
+
+    seg = matched.dropna(subset=["seg_dist"]).copy()
+    total_dist = seg.groupby("ECTRL ID")["seg_dist"].sum()  # every segment counts, regardless of FIR
+
+    fir_start_valid = seg["FIR ID"].notna()
+    same_fir  = fir_start_valid & (seg["FIR ID"] == seg["fir_end"])
+    cross_fir = fir_start_valid & ~same_fir  # segment leaves its starting FIR (into another, or a gap)
+
+    dt_total   = (seg["t_end"] - seg["time_dt"]).dt.total_seconds()
+    dt_to_exit = (seg["exit_dt"] - seg["time_dt"]).dt.total_seconds()
+    frac_start = (dt_to_exit / dt_total).clip(lower=0.0, upper=1.0)
+
+    parts = [seg.loc[same_fir, ["ECTRL ID", "FIR ID"]].assign(dist=seg.loc[same_fir, "seg_dist"])]
+    parts.append(seg.loc[cross_fir, ["ECTRL ID", "FIR ID"]].assign(
+        dist=seg.loc[cross_fir, "seg_dist"] * frac_start[cross_fir]))
+    # the remainder only goes to the ending FIR if there is one (not a FIR-to-gap transition,
+    # matching the original: distance is dropped, not assigned, when the segment ends in a gap)
+    cross_to_fir = cross_fir & seg["fir_end"].notna()
+    parts.append(seg.loc[cross_to_fir, ["ECTRL ID", "fir_end"]].rename(columns={"fir_end": "FIR ID"}).assign(
+        dist=seg.loc[cross_to_fir, "seg_dist"] * (1 - frac_start[cross_to_fir])))
+
+    fir_dist_long = pd.concat(parts, ignore_index=True)
+    fir_dist_long["FIR ID"] = fir_dist_long["FIR ID"].apply(lambda f: _remap_uir_to_fir(f, eurocontrol_rates))
+    fir_dist_long = fir_dist_long.groupby(["ECTRL ID", "FIR ID"])["dist"].sum().reset_index()
+    fir_wide = fir_dist_long.pivot(index="ECTRL ID", columns="FIR ID", values="dist").fillna(0)
+
+    # --- filed trajectory's total distance (planned_dist_nm) ---
+    fp = filed_pts.sort_values(["ECTRL ID", "Sequence Number"]).reset_index(drop=True)
+    fp["seg_dist"] = _consecutive_segment_distances(fp, "ECTRL ID", "Latitude", "Longitude")
+    planned_dist = fp.groupby("ECTRL ID")["seg_dist"].sum()
+
+    # --- assemble per-flight metrics; skip flights missing FIR/point data entirely (inner joins) ---
     meta = df_sample[["ECTRL ID", ac_col, "mtow_t"]].copy()
     meta["ECTRL ID"] = meta["ECTRL ID"].astype(str)
 
-    records = []
-    for _, mrow in meta.iterrows():
-        eid = str(mrow["ECTRL ID"])
-        if eid not in firs_by_id or eid not in pts_by_id:
-            continue
-        fir_dists, dur_h, total_dist = _flight_actual_metrics(
-            firs_by_id[eid], pts_by_id[eid], eurocontrol_rates
-        )
-        if not fir_dists or pd.isna(dur_h):
-            continue
-        ac, mtow = mrow[ac_col], mrow["mtow_t"]
-        fkgh = FUEL_KGH.get(ac)
-        rep = dict(fir_dists)
-        rep["mtow_t"] = mtow
-        atc_eur  = flight_atc_eur(rep) if not pd.isna(mtow) else np.nan
-        fuel_eur = round(fkgh * dur_h * JET_A_EUR_PER_KG, 2) if fkgh else np.nan
-        fuel_kg  = round(fkgh * dur_h, 1) if fkgh else np.nan
-        cost_eur = round(atc_eur + fuel_eur, 2) if not (pd.isna(atc_eur) or pd.isna(fuel_eur)) else np.nan
-        records.append({
-            "ECTRL ID":             int(eid),
-            "actual_duration_h":    round(dur_h, 4),
-            "actual_total_dist_nm": round(total_dist, 1),
-            "actual_atc_eur":       atc_eur,
-            "actual_fuel_eur":      fuel_eur,
-            "actual_fuel_kg":       fuel_kg,
-            "actual_cost_eur":      cost_eur,
-            "planned_dist_nm":      _total_dist_from_pts(filed_by_id[eid]) if eid in filed_by_id else np.nan,
-        })
-    return pd.DataFrame(records)
+    out = meta.merge(fir_wide, left_on="ECTRL ID", right_index=True, how="inner")
+    out = out.merge(duration_h.rename("actual_duration_h"), left_on="ECTRL ID", right_index=True, how="inner")
+    out = out.merge(total_dist.rename("actual_total_dist_nm"), left_on="ECTRL ID", right_index=True, how="inner")
+    out = out.merge(planned_dist.rename("planned_dist_nm"), left_on="ECTRL ID", right_index=True, how="left")
+    out = out[out["actual_duration_h"].notna()]
+
+    fir_cols = list(fir_wide.columns)
+
+    def _row_atc(row):
+        rep = {fir: row[fir] for fir in fir_cols}
+        rep["mtow_t"] = row["mtow_t"]
+        return flight_atc_eur(rep) if pd.notna(row["mtow_t"]) else np.nan
+
+    out["actual_atc_eur"] = out.apply(_row_atc, axis=1)
+    fuel_kgh = out[ac_col].map(FUEL_KGH)
+    out["actual_fuel_kg"]  = (fuel_kgh * out["actual_duration_h"]).round(1)
+    out["actual_fuel_eur"] = (out["actual_fuel_kg"] * JET_A_EUR_PER_KG).round(2)
+    out["actual_cost_eur"] = (out["actual_atc_eur"] + out["actual_fuel_eur"]).round(2)
+    out["actual_duration_h"]    = out["actual_duration_h"].round(4)
+    out["actual_total_dist_nm"] = out["actual_total_dist_nm"].round(1)
+    out["planned_dist_nm"]      = out["planned_dist_nm"].round(1)
+    out["ECTRL ID"] = out["ECTRL ID"].astype(int)
+
+    return out[["ECTRL ID", "actual_duration_h", "actual_total_dist_nm",
+                "actual_atc_eur", "actual_fuel_eur", "actual_fuel_kg",
+                "actual_cost_eur", "planned_dist_nm"]].reset_index(drop=True)
 
 
 def _summarise(df, group_cols, delta_cols):
