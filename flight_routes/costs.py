@@ -128,11 +128,45 @@ def flight_fuel_eur(row, ac_col, duration_col="Duration_Hours"):
 
 
 def add_cost_columns(df, ac_col=None):
-    """Add mtow_t, atc_eur, fuel_eur, cost_eur columns. Returns a new DataFrame."""
+    """Add mtow_t, atc_eur, fuel_eur, cost_eur columns. Returns a new DataFrame.
+
+    Vectorised across all rows at once, not a row-wise `.apply(axis=1)` (the
+    row-wise version this replaced is still available as flight_atc_eur/
+    flight_fuel_eur for single-row use, e.g. inside variance.build_actual_metrics
+    where it's cheap relative to the point-level work around it). At
+    full-dataset scale (536,520 rows, 300+ FIR columns) `.apply(axis=1)` risked
+    exhausting Colab's RAM - this mirrors the vectorised approach already used
+    (and validated against the published report numbers) in
+    query.build_full_summary. Validated to match the row-wise version exactly
+    on the real training sample, see tests/test_costs.py.
+    """
     df = df.copy()
     ac_col = ac_col or detect_ac_col(df)
-    df["mtow_t"]   = df[ac_col].map(MTOW_TONNES)
-    df["atc_eur"]  = df.apply(flight_atc_eur, axis=1)
-    df["fuel_eur"] = df.apply(lambda row: flight_fuel_eur(row, ac_col), axis=1)
+    df["mtow_t"] = df[ac_col].map(MTOW_TONNES)
+    mtow = df["mtow_t"]
+
+    total = pd.Series(0.0, index=df.index)
+    base_totals, base_rate_map = {}, {}
+    for fir, rate in EUROCONTROL_RATES.items():
+        if fir not in df.columns:
+            continue
+        base = fir[:-3]
+        base_totals[base] = base_totals.get(base, pd.Series(0.0, index=df.index)) + df[fir].fillna(0)
+        base_rate_map.setdefault(base, rate)
+    for base, dist_nm_col in base_totals.items():
+        dist_km = dist_nm_col * 1.852
+        total += (dist_km / 100) * np.sqrt(mtow / 50) * base_rate_map[base]
+    for fir in ("CZQMFIR", "CZULFIR"):
+        if fir in df.columns:
+            dist_km = df[fir].fillna(0) * 1.852
+            total += NAV_CANADA_R * np.sqrt(mtow) * dist_km * CAD_EUR
+    if "CZQXFIR" in df.columns:
+        total += (df["CZQXFIR"].fillna(0) > 0).astype(float) * NAV_CANADA_OCEANIC * CAD_EUR
+    df["atc_eur"] = total.where(mtow.notna()).round(2)
+
+    duration_h = df["Duration_Hours"].apply(_parse_duration)
+    fuel_kgh = df[ac_col].map(FUEL_KGH)
+    df["fuel_eur"] = (fuel_kgh * duration_h * JET_A_EUR_PER_KG).where(fuel_kgh.notna() & mtow.notna()).round(2)
+
     df["cost_eur"] = (df["atc_eur"] + df["fuel_eur"]).round(2)
     return df
