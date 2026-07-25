@@ -12,5 +12,11 @@ dist/
 data/raw/*
 !data/raw/.gitkeep
 
+# SQLite cache (cache_db.py) - a derived, regenerable local cache, same
+# reasoning as df_full.parquet never having been committed either. Unlike
+# CSVs, a binary DB file also diffs badly in git on every regeneration.
+data/processed/cache.db
+data/processed/_variance_batches/
+
 notebooks/backups/
 ~$*.docx

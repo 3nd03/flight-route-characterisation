@@ -11,10 +11,14 @@ mean/std/5th-95th percentile so either can be sampled from directly.
    clusters and O-D pairs.
 """
 
+import gc
+import shutil
+
 import numpy as np
 import pandas as pd
 
-from .costs import FUEL_KGH, JET_A_EUR_PER_KG, _parse_duration, flight_atc_eur
+from . import cache_db, data
+from .costs import FUEL_KGH, JET_A_EUR_PER_KG, MTOW_TONNES, _parse_duration, flight_atc_eur
 
 
 def haversine_nm(lat1, lon1, lat2, lon2):
@@ -163,6 +167,78 @@ def build_actual_metrics(df_sample, actual_firs, actual_pts, filed_pts,
     return out[["ECTRL ID", "actual_duration_h", "actual_total_dist_nm",
                 "actual_atc_eur", "actual_fuel_eur", "actual_fuel_kg",
                 "actual_cost_eur", "planned_dist_nm"]].reset_index(drop=True)
+
+
+def build_actual_metrics_full_dataset(df_full, eurocontrol_rates, ac_col=None,
+                                       batch_size=20_000, force_rebuild=False,
+                                       progress_every=5, month=data.DEFAULT_MONTH):
+    """build_actual_metrics for the whole dataset (536,520+ flights), memory-bounded.
+
+    data.load_actual_and_filed materialises every matching row of all three
+    raw files in RAM at once - fine at training-sample scale (~1,650 flights,
+    a tiny fraction of each file) but not at full-dataset scale, where the
+    row filter survives roughly 60% of each multi-GB file.
+
+    Instead: split flights into batch_size-sized batches, partition each raw
+    file to per-batch CSVs on disk with a single chunked pass per file
+    (data._partition_by_batch - never more than one chunk in RAM), then run
+    build_actual_metrics per batch and keep only its small per-flight output,
+    discarding the batch's raw rows before moving to the next. Mirrors
+    clustering.cluster_full_dataset's streaming + gc.collect() pattern: disk
+    and time are cheap on Colab's free tier, RAM is the scarce resource.
+
+    Cached as a single "actual_metrics_full" table (see cache_db.py) once
+    computed, since recomputing over all batches is the expensive part.
+    """
+    cache = data.cache_dir()
+    if not force_rebuild and cache_db.has_table(cache, "actual_metrics_full"):
+        return cache_db.read_table(cache, "actual_metrics_full")
+
+    ac_col = ac_col or next(c for c in df_full.columns if "AC Type" in c)
+    df_full = df_full.copy()
+    df_full["ECTRL ID"] = df_full["ECTRL ID"].astype(str)
+    if "mtow_t" not in df_full.columns:
+        df_full["mtow_t"] = df_full[ac_col].map(MTOW_TONNES)
+
+    ids = df_full["ECTRL ID"].unique()
+    id_to_batch = {eid: i // batch_size for i, eid in enumerate(ids)}
+    n_batches = max(id_to_batch.values()) + 1
+
+    raw = data.raw_dir()
+    tmp_dir = cache / "_variance_batches"
+    if tmp_dir.exists():
+        shutil.rmtree(tmp_dir)
+    tmp_dir.mkdir(parents=True)
+
+    try:
+        firs_paths = data._partition_by_batch(data._firs_actual_path(raw, month), id_to_batch, tmp_dir, "firs")
+        pts_paths = data._partition_by_batch(data._points_actual_path(raw, month), id_to_batch, tmp_dir, "pts")
+        filed_paths = data._partition_by_batch(data._points_filed_path(raw, month), id_to_batch, tmp_dir, "filed")
+
+        batch_num = df_full["ECTRL ID"].map(id_to_batch)
+        empty_filed = pd.DataFrame(columns=["ECTRL ID", "Sequence Number", "Latitude", "Longitude"])
+        results = []
+        for b in range(n_batches):
+            if b not in firs_paths or b not in pts_paths:
+                continue
+            batch_sample = df_full[batch_num == b]
+            actual_firs = pd.read_csv(firs_paths[b], dtype={"ECTRL ID": str})
+            actual_pts  = pd.read_csv(pts_paths[b], dtype={"ECTRL ID": str})
+            filed_pts   = pd.read_csv(filed_paths[b], dtype={"ECTRL ID": str}) if b in filed_paths else empty_filed
+
+            results.append(build_actual_metrics(
+                batch_sample, actual_firs, actual_pts, filed_pts, eurocontrol_rates, ac_col=ac_col
+            ))
+
+            del actual_firs, actual_pts, filed_pts, batch_sample
+            if (b + 1) % progress_every == 0 or b == n_batches - 1:
+                gc.collect()
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    out = pd.concat(results, ignore_index=True)
+    cache_db.write_table(cache, "actual_metrics_full", out, index_cols=["ECTRL ID"])
+    return out
 
 
 def _summarise(df, group_cols, delta_cols):

@@ -23,10 +23,10 @@ labels = labels.rename(columns={"ECTRL ID": "ECTRL_ID"})
 pts = pts.merge(labels[["ECTRL_ID", "ADEP", "ADES", "cluster_kmeans"]], on="ECTRL_ID", how="inner")
 pts = pts.sort_values(["ECTRL_ID", "Sequence Number"])
 
-print("=== cluster_labels.csv ===")
+print("cluster_labels.csv")
 print(f"rows: {len(labels)}  |  unique ECTRL_IDs: {labels['ECTRL_ID'].nunique()}")
 print(labels.groupby(["ADEP", "ADES", "cluster_kmeans"]).size().rename("n_flights").reset_index().to_string(index=False))
-print("\n=== after merge ===")
+print("\nafter merge")
 print(f"rows: {len(pts)}  |  unique flights: {pts['ECTRL_ID'].nunique()}")
 
 for (adep, ades), od_pts in pts.groupby(["ADEP", "ADES"]):
