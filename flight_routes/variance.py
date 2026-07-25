@@ -75,8 +75,13 @@ def build_actual_metrics(df_sample, actual_firs, actual_pts, filed_pts,
 
     # --- per-flight airborne window (first entry, last exit of the sorted-by-entry sequence) ---
     firs = actual_firs[~actual_firs["FIR ID"].isin(["TAXI_OUT", "TAXI_IN"])].copy()
-    firs["entry_dt"] = pd.to_datetime(firs["Entry Time"], dayfirst=True)
-    firs["exit_dt"]  = pd.to_datetime(firs["Exit Time"], dayfirst=True)
+    # format="mixed": some rows lack zero-padding (e.g. single-digit day/month),
+    # so pandas can't infer one fixed format across the whole column and falls
+    # back to the much slower per-element dateutil parser with just dayfirst=True.
+    # "mixed" uses pandas' own faster per-element parser instead, without
+    # requiring - or risking erroring on - a single strict width.
+    firs["entry_dt"] = pd.to_datetime(firs["Entry Time"], format="mixed", dayfirst=True)
+    firs["exit_dt"]  = pd.to_datetime(firs["Exit Time"], format="mixed", dayfirst=True)
     firs = firs.sort_values(["ECTRL ID", "entry_dt"])
 
     bounds = firs.groupby("ECTRL ID").agg(
@@ -86,7 +91,7 @@ def build_actual_metrics(df_sample, actual_firs, actual_pts, filed_pts,
 
     # --- actual trajectory points, restricted to each flight's airborne window ---
     pts = actual_pts.copy()
-    pts["time_dt"] = pd.to_datetime(pts["Time Over"], dayfirst=True)
+    pts["time_dt"] = pd.to_datetime(pts["Time Over"], format="mixed", dayfirst=True)
     pts = pts.merge(bounds, on="ECTRL ID", how="inner")
     pts = pts[(pts["time_dt"] >= pts["window_start"]) & (pts["time_dt"] <= pts["window_end"])]
 
