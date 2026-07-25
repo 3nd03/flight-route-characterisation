@@ -13,11 +13,25 @@ summarise_self_deltas_by_carrier() reuses variance.compute_self_deltas'
 output (the planned-vs-realised deltas), just regrouped by carrier_type
 instead of O-D pair/cluster.
 
-"ZZZ" (164,807 flights, ~18% of the whole Sep 2023 dataset, by far the
-single largest operator code) is almost certainly a placeholder for
-unidentified or general-aviation operators, not a real airline. It is
-deliberately left out of both categories and mapped to "unclassified"
-rather than guessed into either bucket.
+"ZZZ" is almost certainly a placeholder for unidentified or general-aviation
+operators, not a real airline - it is deliberately left out of both
+categories and mapped to "unclassified" rather than guessed into either
+bucket. Its share depends on which denominator: 164,807 of the raw
+899,495-row Sep 2023 export (~18.3%), but 79,193 of the ~536,520-flight
+qualifying-O-D-pair subset used for the full-dataset analysis (~14.8%) -
+the qualifying-pairs filter (min_flights_per_od) disproportionately drops
+one-off ZZZ flights along with everything else below the threshold.
+
+Coverage on the full qualifying-pairs dataset (measured 2026-07-27):
+LOW_COST 18.4%, FULL_SERVICE 34.5%, unclassified 47.1% before the second
+round of codes below was added (PGT/TVF/AEE/LOT/AEA/QTR/BEL/UAE/EIN,
+identified from the actual top-30 AC Operator counts on that dataset,
+recovering roughly a further 10 percentage points). Genuinely ambiguous
+codes seen in that same top-30 were deliberately left unclassified rather
+than guessed: WIF (Wideroe, Norwegian regional feeder), SXS (SunExpress,
+a Lufthansa/Turkish Airlines leisure-charter joint venture), ANE (Air
+Nostrum, Iberia's regional feeder) - none of these fit a clean low-cost/
+full-service split.
 """
 
 from .variance import DELTA_COLS_SELF, _summarise
@@ -31,6 +45,8 @@ LOW_COST = {
     "TRA",  # Transavia
     "VOE",  # Volotea
     "EXS",  # Jet2.com
+    "PGT",  # Pegasus Airlines
+    "TVF",  # Transavia France (distinct ICAO code from parent TRA)
 }
 
 FULL_SERVICE = {
@@ -45,6 +61,14 @@ FULL_SERVICE = {
     "AUA",  # Austrian Airlines
     "TAP",  # TAP Air Portugal
     "FIN",  # Finnair
+    "AEE",  # Aegean Airlines
+    "LOT",  # LOT Polish Airlines
+    "AEA",  # Air Europa
+    "QTR",  # Qatar Airways
+    "BEL",  # Brussels Airlines
+    "UAE",  # Emirates
+    "EIN",  # Aer Lingus - borderline: IAG flag carrier, but has budget-airline
+            # characteristics on short-haul; classified full-service on balance
 }
 
 

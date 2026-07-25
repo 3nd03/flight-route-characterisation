@@ -15,6 +15,26 @@ def test_known_full_service_codes():
     assert carrier_type("KLM") == "full_service"
 
 
+def test_second_round_codes_added_from_real_top30_counts():
+    # identified from df_full's real AC Operator top-30 counts (2026-07-27)
+    assert carrier_type("PGT") == "low_cost"       # Pegasus Airlines
+    assert carrier_type("TVF") == "low_cost"       # Transavia France
+    assert carrier_type("AEE") == "full_service"   # Aegean Airlines
+    assert carrier_type("LOT") == "full_service"   # LOT Polish Airlines
+    assert carrier_type("AEA") == "full_service"   # Air Europa
+    assert carrier_type("QTR") == "full_service"   # Qatar Airways
+    assert carrier_type("BEL") == "full_service"   # Brussels Airlines
+    assert carrier_type("UAE") == "full_service"   # Emirates
+    assert carrier_type("EIN") == "full_service"   # Aer Lingus (borderline, see module docstring)
+
+
+def test_ambiguous_business_model_codes_left_unclassified():
+    # deliberately not guessed into either bucket - see module docstring
+    assert carrier_type("WIF") == "unclassified"  # Wideroe, regional feeder
+    assert carrier_type("SXS") == "unclassified"  # SunExpress, leisure JV
+    assert carrier_type("ANE") == "unclassified"  # Air Nostrum, regional feeder
+
+
 def test_zzz_placeholder_and_unknown_codes_are_unclassified():
     assert carrier_type("ZZZ") == "unclassified"
     assert carrier_type("XYZ123") == "unclassified"
