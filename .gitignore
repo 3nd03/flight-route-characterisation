@@ -1,0 +1,16 @@
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+*.egg-info/
+.venv/
+build/
+dist/
+.pytest_cache/
+
+# raw source data is large (100MB-2GB per file) and not meant to live in git;
+# data/processed/ (the query-ready output) IS tracked, it is small and is the point of the repo
+data/raw/*
+!data/raw/.gitkeep
+
+notebooks/backups/
+~$*.docx
