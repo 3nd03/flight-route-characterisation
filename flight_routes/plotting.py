@@ -197,7 +197,7 @@ def plot_representative_trajectories(df_compared, l3_centroids, actual_pts, ac_c
             )
             fig.update_layout(
                 title=(f"{adep}-{ades} | Cluster {clust} representative actual trajectory<br>"
-                       f"ECTRL {rep_id} ({top_ac}) — Δdist {d_dist_str} | Δdur {d_dur_str}"),
+                       f"ECTRL {rep_id} ({top_ac}), Δdist {d_dist_str} | Δdur {d_dur_str}"),
                 height=450, margin=dict(t=80),
             )
             fig.show()
