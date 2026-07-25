@@ -62,6 +62,28 @@ def plot_cluster_pca(df, fir_cols, label_col="cluster_kmeans"):
         fig.show()
 
 
+def plot_cost_bars(df, label_col="cluster_kmeans"):
+    """Stacked ATC/fuel cost bar per cluster, with total and n annotated."""
+    for (adep, ades), grp in df.groupby(["ADEP", "ADES"]):
+        grp = grp.dropna(subset=["atc_eur", "fuel_eur"])
+        clusters = sorted(grp[label_col].unique())
+        x = [f"C{c}" for c in clusters]
+        atc_m  = [round(grp[grp[label_col] == c]["atc_eur"].mean()) for c in clusters]
+        fuel_m = [round(grp[grp[label_col] == c]["fuel_eur"].mean()) for c in clusters]
+        n_list = [grp[grp[label_col] == c].shape[0] for c in clusters]
+
+        fig = go.Figure(data=[
+            go.Bar(name="ATC", x=x, y=atc_m, marker_color="#4C78A8"),
+            go.Bar(name="Fuel", x=x, y=fuel_m, marker_color="#F58518"),
+        ])
+        for xi, atc, fuel, n in zip(x, atc_m, fuel_m, n_list):
+            fig.add_annotation(x=xi, y=atc + fuel, text=f"€{atc + fuel:,}<br>n={n}",
+                                showarrow=False, yanchor="bottom", font_size=11)
+        fig.update_layout(barmode="stack", title=f"{adep}-{ades}: mean cost per cluster",
+                           yaxis_title="EUR", height=460)
+        fig.show()
+
+
 def plot_route_alternatives(df_summary, title_suffix=""):
     """Cost vs duration scatter, one point per cluster, sized by n_flights."""
     for (adep, ades), grp in df_summary.groupby(["ADEP", "ADES"]):
