@@ -7,7 +7,10 @@ someone else's raw-data archive:
 - ``FLIGHT_ROUTES_RAW_DIR``   - raw EUROCONTROL parquet/csv exports (large, not in git)
 - ``FLIGHT_ROUTES_CACHE_DIR`` - derived/cached outputs (small, safe to commit)
 
-Both default to ``<package root>/data/{raw,processed}``.
+Both default to ``<package root>/data/{raw,processed}``. Read fresh on every
+call (not frozen at import time) - set the env var any time before calling
+a function, including after ``import flight_routes`` has already run, e.g.
+after mounting Drive in a later notebook cell.
 """
 
 import os
@@ -16,11 +19,15 @@ from pathlib import Path
 import pandas as pd
 
 _PACKAGE_ROOT = Path(__file__).resolve().parent.parent
-RAW_DIR   = Path(os.environ.get("FLIGHT_ROUTES_RAW_DIR", _PACKAGE_ROOT / "data" / "raw"))
-CACHE_DIR = Path(os.environ.get("FLIGHT_ROUTES_CACHE_DIR", _PACKAGE_ROOT / "data" / "processed"))
 
-RAW_FIR_PARQUET     = RAW_DIR / "Final_Wide_Report.parquet"
-RAW_FLIGHTS_PARQUET = RAW_DIR / "Flights_20230901_20230930.parquet"
+
+def raw_dir():
+    return Path(os.environ.get("FLIGHT_ROUTES_RAW_DIR", _PACKAGE_ROOT / "data" / "raw"))
+
+
+def cache_dir():
+    return Path(os.environ.get("FLIGHT_ROUTES_CACHE_DIR", _PACKAGE_ROOT / "data" / "processed"))
+
 
 TARGET_OD = [("LEBL", "LEPA"), ("EGLL", "KJFK"), ("LPPT", "EDDB")]
 VAL_OD    = ("EGLL", "LGAV")
@@ -38,17 +45,19 @@ def _inner_join_scheduled(fir_df, flights_df):
 def load_training_sample(target_od=TARGET_OD, val_od=VAL_OD, force_rebuild=False):
     """Return (df_sample, df_val) for the training O-D pairs and the held-out validation pair.
 
-    Loads from CACHE_DIR if present; otherwise rebuilds from RAW_DIR parquets
+    Loads from cache_dir() if present; otherwise rebuilds from raw_dir() parquets
     and writes the cache for next time.
     """
-    sample_cache = CACHE_DIR / "df_sample.csv"
-    val_cache    = CACHE_DIR / "df_val.csv"
+    cache = cache_dir()
+    sample_cache = cache / "df_sample.csv"
+    val_cache    = cache / "df_val.csv"
 
     if sample_cache.exists() and val_cache.exists() and not force_rebuild:
         return pd.read_csv(sample_cache), pd.read_csv(val_cache)
 
-    fir     = pd.read_parquet(RAW_FIR_PARQUET)
-    flights = pd.read_parquet(RAW_FLIGHTS_PARQUET)
+    raw = raw_dir()
+    fir     = pd.read_parquet(raw / "Final_Wide_Report.parquet")
+    flights = pd.read_parquet(raw / "Flights_20230901_20230930.parquet")
     df = _inner_join_scheduled(fir, flights)
     del fir, flights
 
@@ -57,7 +66,7 @@ def load_training_sample(target_od=TARGET_OD, val_od=VAL_OD, force_rebuild=False
     df_val    = df[od_idx.isin([val_od])].reset_index(drop=True)
     del df
 
-    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    cache.mkdir(parents=True, exist_ok=True)
     df_sample.to_csv(sample_cache, index=False)
     df_val.to_csv(val_cache, index=False)
     return df_sample, df_val
@@ -65,12 +74,14 @@ def load_training_sample(target_od=TARGET_OD, val_od=VAL_OD, force_rebuild=False
 
 def load_od_counts(force_rebuild=False):
     """Flight counts per O-D pair across the full scheduled-flights dataset."""
-    cache = CACHE_DIR / "od_counts_full.csv"
-    if cache.exists() and not force_rebuild:
-        return pd.read_csv(cache)
+    cache = cache_dir()
+    cache_file = cache / "od_counts_full.csv"
+    if cache_file.exists() and not force_rebuild:
+        return pd.read_csv(cache_file)
 
     flights = pd.read_parquet(
-        RAW_FLIGHTS_PARQUET, columns=["ECTRL ID", "ADEP", "ADES", "ICAO Flight Type"]
+        raw_dir() / "Flights_20230901_20230930.parquet",
+        columns=["ECTRL ID", "ADEP", "ADES", "ICAO Flight Type"],
     )
     flights = flights[flights["ICAO Flight Type"] == "S"]
     od_counts = (
@@ -80,19 +91,21 @@ def load_od_counts(force_rebuild=False):
         .sort_values("n_flights", ascending=False)
         .reset_index(drop=True)
     )
-    CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    od_counts.to_csv(cache, index=False)
+    cache.mkdir(parents=True, exist_ok=True)
+    od_counts.to_csv(cache_file, index=False)
     return od_counts
 
 
 def load_full_dataset(min_flights_per_od=30, force_rebuild=False):
     """Full FIR+Flights join, filtered to O-D pairs with at least ``min_flights_per_od`` flights."""
-    cache = CACHE_DIR / "df_full.parquet"
-    if cache.exists() and not force_rebuild:
-        return pd.read_parquet(cache)
+    cache = cache_dir()
+    cache_file = cache / "df_full.parquet"
+    if cache_file.exists() and not force_rebuild:
+        return pd.read_parquet(cache_file)
 
-    fir     = pd.read_parquet(RAW_FIR_PARQUET)
-    flights = pd.read_parquet(RAW_FLIGHTS_PARQUET)
+    raw = raw_dir()
+    fir     = pd.read_parquet(raw / "Final_Wide_Report.parquet")
+    flights = pd.read_parquet(raw / "Flights_20230901_20230930.parquet")
     df = _inner_join_scheduled(fir, flights)
     del fir, flights
 
@@ -102,8 +115,8 @@ def load_full_dataset(min_flights_per_od=30, force_rebuild=False):
     df_full     = df[od_idx.isin(qualifying)].reset_index(drop=True)
     del df
 
-    CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    df_full.to_parquet(cache, index=False)
+    cache.mkdir(parents=True, exist_ok=True)
+    df_full.to_parquet(cache_file, index=False)
     return df_full
 
 
@@ -119,12 +132,14 @@ def _load_filtered_csv(raw_path, sample_ids, chunksize=500_000):
 def load_actual_and_filed(df_sample, force_rebuild=False):
     """Return (actual_firs, actual_pts, filed_pts), filtered to the flights in df_sample.
 
-    Reads from RAW_DIR: Flight_FIRs_Actual, Flight_Points_Actual, Flight_Points_Filed
+    Reads from raw_dir(): Flight_FIRs_Actual, Flight_Points_Actual, Flight_Points_Filed
     (each ~500MB-2GB, per the September 2023 EUROCONTROL export).
     """
-    actual_firs_cache  = CACHE_DIR / "actual_firs_sample.csv"
-    actual_pts_cache   = CACHE_DIR / "actual_points_sample.csv"
-    filed_pts_cache    = CACHE_DIR / "filed_points_sample.csv"
+    cache = cache_dir()
+    raw = raw_dir()
+    actual_firs_cache = cache / "actual_firs_sample.csv"
+    actual_pts_cache  = cache / "actual_points_sample.csv"
+    filed_pts_cache   = cache / "filed_points_sample.csv"
     sample_ids = set(df_sample["ECTRL ID"].astype(str))
 
     if actual_firs_cache.exists() and actual_pts_cache.exists() and not force_rebuild:
@@ -132,21 +147,21 @@ def load_actual_and_filed(df_sample, force_rebuild=False):
         actual_pts  = pd.read_csv(actual_pts_cache, dtype={"ECTRL ID": str})
     else:
         actual_firs_raw = pd.read_csv(
-            RAW_DIR / "Flight_FIRs_Actual_20230901_20230930.csv", dtype={"ECTRL ID": str}
+            raw / "Flight_FIRs_Actual_20230901_20230930.csv", dtype={"ECTRL ID": str}
         )
         actual_firs = actual_firs_raw[actual_firs_raw["ECTRL ID"].isin(sample_ids)].reset_index(drop=True)
         del actual_firs_raw
-        actual_pts = _load_filtered_csv(RAW_DIR / "Flight_Points_Actual_20230901_20230930.csv", sample_ids)
+        actual_pts = _load_filtered_csv(raw / "Flight_Points_Actual_20230901_20230930.csv", sample_ids)
 
-        CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        cache.mkdir(parents=True, exist_ok=True)
         actual_firs.to_csv(actual_firs_cache, index=False)
         actual_pts.to_csv(actual_pts_cache, index=False)
 
     if filed_pts_cache.exists() and not force_rebuild:
         filed_pts = pd.read_csv(filed_pts_cache, dtype={"ECTRL ID": str})
     else:
-        filed_pts = _load_filtered_csv(RAW_DIR / "Flight_Points_Filed_20230901_20230930.csv", sample_ids)
-        CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        filed_pts = _load_filtered_csv(raw / "Flight_Points_Filed_20230901_20230930.csv", sample_ids)
+        cache.mkdir(parents=True, exist_ok=True)
         filed_pts.to_csv(filed_pts_cache, index=False)
 
     return actual_firs, actual_pts, filed_pts
