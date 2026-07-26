@@ -1,0 +1,4 @@
+carrier_type,n,delta_dist_nm_self_mean,delta_dist_nm_self_std,delta_dist_nm_self_p5,delta_dist_nm_self_p95,delta_duration_h_self_mean,delta_duration_h_self_std,delta_duration_h_self_p5,delta_duration_h_self_p95,delta_fuel_kg_self_mean,delta_fuel_kg_self_std,delta_fuel_kg_self_p5,delta_fuel_kg_self_p95
+full_service,216952,-6.85,29.89,-51.9,29.9,0.0,0.13,-0.19,0.2,49.67,556.44,-511.5,720.0
+low_cost,115294,-7.93,25.38,-50.0,25.2,0.0,0.15,-0.17,0.16,1.12,351.37,-400.0,395.13
+unclassified,189300,-7.49,31.93,-54.4,28.2,-0.01,0.19,-0.2,0.18,13.48,563.53,-530.1,634.1

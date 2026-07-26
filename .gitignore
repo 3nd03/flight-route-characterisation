@@ -17,6 +17,9 @@ data/raw/*
 # CSVs, a binary DB file also diffs badly in git on every regeneration.
 data/processed/cache.db
 data/processed/_variance_batches/
+data/processed/df_full.parquet
+data/processed/_local_run_checkpoint/
 
 notebooks/backups/
 ~$*.docx
+run_log.txt

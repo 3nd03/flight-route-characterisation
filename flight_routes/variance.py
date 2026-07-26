@@ -200,7 +200,13 @@ def build_actual_metrics_full_dataset(df_full, eurocontrol_rates, ac_col=None,
         return cache_db.read_table(cache, "actual_metrics_full")
 
     ac_col = ac_col or next(c for c in df_full.columns if "AC Type" in c)
-    df_full = df_full.copy()
+    # No defensive df_full.copy() here: at full-dataset scale df_full's 300+ float
+    # columns get added incrementally (FIR cols from the raw join, mtow_t/atc_eur/
+    # fuel_eur/cost_eur from add_cost_columns), leaving them as separate unconsolidated
+    # blocks - .copy() forces pandas to consolidate them into one new contiguous
+    # (n_float_cols, n_rows) array, a 1.24 GiB allocation on the real dataset, on top
+    # of everything else already resident. The two mutations below are column-level
+    # and idempotent (str cast, additive column), so they're applied in place instead.
     df_full["ECTRL ID"] = df_full["ECTRL ID"].astype(str)
     if "mtow_t" not in df_full.columns:
         df_full["mtow_t"] = df_full[ac_col].map(MTOW_TONNES)
