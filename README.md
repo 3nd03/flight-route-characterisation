@@ -2,7 +2,7 @@
 
 Data driven characterisation of flight route alternatives and their cost, built as an input layer for Mercury, the air transport mobility simulator developed at the University of Westminster's Centre for Air Traffic Management Research. Given an aircraft type and origin-destination pair, it returns the historically observed route alternatives, ranked by predicted cost or duration, instead of assuming a single planned route.
 
-Built under the University of Westminster "Students as Co-Creators" programme. Student partner: Óscar Denche Morant. Academic partners: Luis Delgado, Michal Weiszer.
+Built under the University of Westminster "Students as Co-Creators" programme. Student partner: Oscar Denche. Academic partners: Luis Delgado, Michal Weiszer.
 
 ## Quick start
 

@@ -23,3 +23,5 @@ data/processed/_local_run_checkpoint/
 notebooks/backups/
 ~$*.docx
 run_log.txt
+
+the internal docs
