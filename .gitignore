@@ -24,4 +24,9 @@ notebooks/backups/
 ~$*.docx
 run_log.txt
 
-the internal docs
+# working report drafts stay local-only; docs/images/ and
+# docs/full_dataset_results/ are the public dissemination outputs
+docs/report_draft.md
+docs/report_final.docx
+docs/report_blueprint.md
+docs/technical_documentation.md
